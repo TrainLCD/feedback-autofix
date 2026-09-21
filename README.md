@@ -154,16 +154,19 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
+      # action は可変タグではなく commit SHA で固定すること。理由は「action は
+      # SHA で固定してください」に書いてある。
+      #
       # persist-credentials: false を外さないこと。既定の true だと、書き込み
       # 権限付きの GITHUB_TOKEN がローカルの git 設定に残り、依存のインストールの
       # postinstall とエージェントの Bash(git:*) から素で使える状態になる。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: TrainLCD/feedback-autofix/prepare@v1
+      - uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
         id: prepare
         with:
           stub_issue_number: ${{ github.event.issue.number }}
@@ -185,7 +188,7 @@ jobs:
             - 表示に使う定数やアセット
 
       # ここから先はリポジトリごとに違う。対象だったときだけ走らせる。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.prepare.outputs.eligible == 'true'
         with:
           node-version: 24
@@ -193,7 +196,7 @@ jobs:
       - run: npm ci
         if: steps.prepare.outputs.eligible == 'true'
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1
         id: claude
         if: steps.prepare.outputs.eligible == 'true'
         with:
@@ -204,7 +207,7 @@ jobs:
             --allowedTools "Edit,Read,Write,Glob,Grep,TodoWrite,Bash(npm:*),Bash(git:*),Bash(gh:*),Bash(node:*)"
 
       # always() を外さないこと。エージェントが失敗した場合こそ報告が要る。
-      - uses: TrainLCD/feedback-autofix/report@v1
+      - uses: TrainLCD/feedback-autofix/report@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
         if: ${{ always() && steps.prepare.outputs.eligible == 'true' }}
         with:
           issue_number: ${{ steps.prepare.outputs.issue_number }}
@@ -215,6 +218,49 @@ jobs:
           claude_outcome: ${{ steps.claude.outcome }}
           # 引き継ぎ先に issue を立てられるトークン。省くと引き継ぎは起きない。
           handoff_token: ${{ secrets.HANDOFF_ISSUE_TOKEN }}
+```
+
+## action は SHA で固定してください
+
+このワークフローのジョブは `contents: write` と `pull-requests: write` を持ち、
+`ISSUES_REPO_TOKEN` と `ANTHROPIC_API_KEY` を渡します。`@v1` のような可変タグのままに
+すると、タグが差し替えられた時点でその内容がこの権限で動きます。
+
+`prepare` は非公開の管理チケットを読めるトークンを受け取るので、外部の action より
+むしろ厳しく固定してください。
+
+このリポジトリにはバージョンタグがありません。一度 `v1` を打ちましたが、中身が
+出来上がる前だったので消しました。付け替えも削除も実際に起きるので、「タグは動く」は
+仮定ではありません。
+
+コメントには、その SHA がどこから来たかを残します。
+
+```yaml
+- uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
+```
+
+**固定する SHA を選ぶとき**は `dev` の先頭を取ります。
+
+```bash
+git ls-remote https://github.com/TrainLCD/feedback-autofix refs/heads/dev
+```
+
+**固定済みの SHA が何なのかを確かめるとき**は、この方法は使えません。`dev` が進むと
+先頭が変わるので、固定した SHA とは一致しなくなります。コミットを直接取ってきて
+中身を読んでください。ブランチが何周していても使えます。
+
+```bash
+git fetch --depth 1 https://github.com/TrainLCD/feedback-autofix \
+  406de875a89dd1e640f8b66b71d4de9516a952ca
+git log -1 FETCH_HEAD
+```
+
+タグを打った場合は、注釈付きかどうかで指す先が変わります。使うのはタグオブジェクト
+ではなく `refs/tags/<タグ>^{}` の指すコミットです。`anthropics/claude-code-action` の
+`v1` がこれに当たり、間違えると存在しない参照になります。
+
+```bash
+git ls-remote https://github.com/anthropics/claude-code-action 'refs/tags/v1' 'refs/tags/v1^{}'
 ```
 
 ## リポジトリごとに変える入力
