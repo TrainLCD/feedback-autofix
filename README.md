@@ -86,6 +86,11 @@ StationAPI / Functions の 3 リポジトリから共通で使います。
 の issue #6994 を API で取得すると `user.id` がこの値になります。Worker のトークンを
 別のアカウントへ移したら、3 リポジトリの `allowed_authors` も一緒に変えてください。
 
+引き継ぎで立つスタブ issue の作成者は `HANDOFF_ISSUE_TOKEN` のアカウントです。
+Worker と違うアカウントのトークンを使うなら、その ID も `allowed_authors` に足して
+ください。足さないと引き継ぎ先が issue を受け取っても動きません。複数の ID は
+カンマで区切ります。
+
 ## 使い方
 
 ```yaml
