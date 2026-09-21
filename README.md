@@ -234,10 +234,13 @@ StationAPI の `scope` には `data/*.csv` を含めます。届くフィード�
 だけです。`ANTHROPIC_API_KEY` と合わせて、どちらかを設定し忘れていると、警告を
 出すだけで何もせずに終わります。
 
-`HANDOFF_ISSUE_TOKEN` に要る権限は、引き継ぎ先の 2 リポジトリの Issues
-(read and write) です。設定しなければ引き継ぎは起きず、コメントに名前が出る
-だけになります。Worker の振り分けが外れたときだけ使うので、後回しにしても
-通常の経路は動きます。
+`HANDOFF_ISSUE_TOKEN` は引き継ぎ先のリポジトリに issue を立てるために使います。
+fine-grained token なら、引き継ぎ先の 2 リポジトリに対する **Issues: write** が
+要ります（[GitHub の権限表](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)で
+`POST /repos/{owner}/{repo}/issues` の行）。
+
+設定しなければ引き継ぎは起きず、コメントに名前が出るだけになります。Worker の
+振り分けが外れたときだけ使うので、後回しにしても通常の経路は動きます。
 
 ## 設計上の判断
 
