@@ -166,7 +166,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # v1
+      - uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
         id: prepare
         with:
           stub_issue_number: ${{ github.event.issue.number }}
@@ -207,7 +207,7 @@ jobs:
             --allowedTools "Edit,Read,Write,Glob,Grep,TodoWrite,Bash(npm:*),Bash(git:*),Bash(gh:*),Bash(node:*)"
 
       # always() を外さないこと。エージェントが失敗した場合こそ報告が要る。
-      - uses: TrainLCD/feedback-autofix/report@406de875a89dd1e640f8b66b71d4de9516a952ca # v1
+      - uses: TrainLCD/feedback-autofix/report@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
         if: ${{ always() && steps.prepare.outputs.eligible == 'true' }}
         with:
           issue_number: ${{ steps.prepare.outputs.issue_number }}
@@ -227,20 +227,30 @@ jobs:
 すると、タグが差し替えられた時点でその内容がこの権限で動きます。
 
 `prepare` は非公開の管理チケットを読めるトークンを受け取るので、外部の action より
-むしろ厳しく固定してください。このリポジトリの `v1` タグは実際に 1 度付け替えており、
-「タグは動く」という前提は仮定ではありません。
+むしろ厳しく固定してください。
 
-版はコメントで残します。タグは人が読むためのもので、実行するものではありません。
+このリポジトリにはバージョンタグがありません。一度 `v1` を打ちましたが、中身が
+出来上がる前だったので消しました。付け替えも削除も実際に起きるので、「タグは動く」は
+仮定ではありません。
+
+コメントには、その SHA がどこから来たかを残します。
 
 ```yaml
-- uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # v1
+- uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
 ```
 
-SHA は `git ls-remote` で確かめてください。注釈付きタグの場合、使うのはタグ
-オブジェクトではなく `refs/tags/<タグ>^{}` が指すコミットです。
+SHA は `git ls-remote` で確かめてください。
 
 ```bash
-git ls-remote https://github.com/TrainLCD/feedback-autofix 'refs/tags/v1' 'refs/tags/v1^{}'
+git ls-remote https://github.com/TrainLCD/feedback-autofix refs/heads/dev
+```
+
+タグを打った場合は、注釈付きかどうかで指す先が変わります。使うのはタグオブジェクト
+ではなく `refs/tags/<タグ>^{}` の指すコミットです。`anthropics/claude-code-action` の
+`v1` がこれに当たり、間違えると存在しない参照になります。
+
+```bash
+git ls-remote https://github.com/anthropics/claude-code-action 'refs/tags/v1' 'refs/tags/v1^{}'
 ```
 
 ## リポジトリごとに変える入力
