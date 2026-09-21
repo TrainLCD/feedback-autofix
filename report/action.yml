@@ -40,8 +40,10 @@ inputs:
 
 outputs:
   action:
-    description: linked / declined / failed のいずれか
-    value: ${{ steps.report.outputs.action }}
+    description: |
+      linked / declined / failed のいずれか。引き継ぎ先へ issue を立てられなかった
+      場合は、直せないと分かっていても failed になる。
+    value: ${{ steps.handoff.outputs.ok == 'false' && 'failed' || steps.report.outputs.action }}
   handoff:
     description: 引き継ぎ先のリポジトリ名。決まらなかった場合は空
     value: ${{ steps.report.outputs.handoff }}
@@ -71,6 +73,90 @@ runs:
         fi
         node "${{ github.action_path }}/../scripts/feedback-autofix-comment.mjs"
 
+    # 直せないと分かり、引き継ぎ先も決まっているなら、そのリポジトリにスタブ
+    # issue を立てる。各リポジトリは自分に立った issue に反応する作りなので、
+    # Worker がトリアージで立てるのと同じ経路に乗せる。
+    #
+    # これは Worker の振り分けが外れたときの訂正経路で、通常は使われない。原因の
+    # リポジトリは Worker が本文を読んで判定済みで、スタブはそこへ立っている。
+    #
+    # 行ったり来たりは目印が止める。引き継ぎ先が調べ終えて戻してきても、こちらは
+    # すでに自分の目印を管理チケットへ残しているので、prepare で打ち切られる。
+    #
+    # 管理チケットへの投稿より先に行う。逆にすると、issue を立てられなかったときに
+    # 「済み」の目印だけが残り、prepare が次から打ち切るので、引き継ぎは起きないまま
+    # 二度と動かなくなる。
+    - name: Hand off to another repository
+      id: handoff
+      if: steps.report.outputs.action == 'declined' && steps.report.outputs.handoff != '' && inputs.handoff_token != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.handoff_token }}
+        HANDOFF: ${{ steps.report.outputs.handoff }}
+        ISSUES_REPO: ${{ inputs.issues_repo }}
+        ISSUE_NUMBER: ${{ inputs.issue_number }}
+      run: |
+        # set -e は使わない。失敗しても ok=false を書いてから抜ける必要がある。
+        set -uo pipefail
+        # 引き継ぎ先は feedback-autofix-comment.mjs が既知の名前だけに絞った
+        # あとの値なので、そのままリポジトリ名として使える。
+        #
+        # 題名は Worker が立てるスタブと同じ形にする。下の重複確認がこの形を
+        # 突き合わせるので、変えるときは両方を揃えること。
+        TITLE="フィードバック対応: $ISSUES_REPO#$ISSUE_NUMBER"
+        export TITLE
+
+        # 既に同じ管理チケットのスタブが立っていれば作り直さない。コメントの投稿に
+        # 失敗して再実行したとき、ここを見ないと引き継ぎ先に同じ issue が並ぶ。
+        # 検索の索引に載るまでには間があるので取りこぼすことはあるが、その場合でも
+        # 引き継ぎ先は自分の目印で打ち切られるので、余分な issue が 1 つ残るだけ。
+        # 題名は完全一致で確かめる。検索の語句だけに頼ると、番号の一部が一致する
+        # 別の issue を拾う。
+        EXISTING="$(gh issue list --repo "TrainLCD/$HANDOFF" --state all --limit 100 \
+          --search "in:title \"$ISSUES_REPO#$ISSUE_NUMBER\"" \
+          --json title,number \
+          --jq 'map(select(.title == env.TITLE)) | .[0].number // empty')" || EXISTING=""
+        if [ -n "$EXISTING" ]; then
+          echo "::notice::TrainLCD/$HANDOFF には #$EXISTING が既にあるため、新しくは立てません"
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # 本文は Worker が立てるスタブと同じ形にする。フィードバックの原文・
+        # 要約・端末情報は公開リポジトリに出さない。参照だけを置く。
+        BODY="$(printf '%s\n\n%s\n\n%s\n%s\n' \
+          "$GITHUB_REPOSITORY での自動修正で、原因が本リポジトリにあると判断されたため起票しています。" \
+          "フィードバックの内容は公開リポジトリには掲載していません。詳細は下記の非公開の管理チケットを参照してください。" \
+          "## 管理チケット" \
+          "- Issue: $ISSUES_REPO#$ISSUE_NUMBER")"
+        if ! gh issue create \
+          --repo "TrainLCD/$HANDOFF" \
+          --title "$TITLE" \
+          --body "$BODY"; then
+          echo "::error::TrainLCD/$HANDOFF へ引き継げませんでした"
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "::notice::TrainLCD/$HANDOFF へ引き継ぎました"
+        echo "ok=true" >> "$GITHUB_OUTPUT"
+
+    # 引き継げなかったときは、文面を「済み」から失敗の報告へ差し替える。目印が
+    # 変わるので、次に条件を満たしたときや手動実行でもう一度試せる。verdict.json
+    # から組み立て直すだけなので、もう一度走らせても結果は変わらない。
+    - name: Rebuild the comment when the handoff did not happen
+      if: steps.handoff.outputs.ok == 'false'
+      shell: bash
+      env:
+        VERDICT_PATH: ${{ inputs.verdict_path }}
+        CLAUDE_OUTCOME: ${{ inputs.claude_outcome }}
+        TARGET_REPO: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        OUTPUT_PATH: ${{ runner.temp }}/issue-comment.md
+        HANDOFF_FAILED: "true"
+      run: |
+        set -euo pipefail
+        node "${{ github.action_path }}/../scripts/feedback-autofix-comment.mjs"
+
     # 投稿だけを別のステップに分けてあるのは、Issues リポジトリのトークンを
     # 本文を組み立てる処理から離しておくため。
     - name: Post the comment
@@ -86,47 +172,12 @@ runs:
           --repo "$ISSUES_REPO" \
           --body-file "$RUNNER_TEMP/issue-comment.md"
 
-    # 直せないと分かり、引き継ぎ先も決まっているなら、そのリポジトリにスタブ
-    # issue を立てる。各リポジトリは自分に立った issue に反応する作りなので、
-    # Worker がトリアージで立てるのと同じ経路に乗せる。
-    #
-    # これは Worker の振り分けが外れたときの訂正経路で、通常は使われない。原因の
-    # リポジトリは Worker が本文を読んで判定済みで、スタブはそこへ立っている。
-    #
-    # 行ったり来たりは目印が止める。引き継ぎ先が調べ終えて戻してきても、こちらは
-    # すでに自分の目印を管理チケットへ残しているので、prepare で打ち切られる。
-    - name: Hand off to another repository
-      if: steps.report.outputs.action == 'declined' && steps.report.outputs.handoff != '' && inputs.handoff_token != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.handoff_token }}
-        HANDOFF: ${{ steps.report.outputs.handoff }}
-        ISSUES_REPO: ${{ inputs.issues_repo }}
-        ISSUE_NUMBER: ${{ inputs.issue_number }}
-      run: |
-        set -euo pipefail
-        # 引き継ぎ先は feedback-autofix-comment.mjs が既知の名前だけに絞った
-        # あとの値なので、そのままリポジトリ名として使える。
-        #
-        # 本文は Worker が立てるスタブと同じ形にする。フィードバックの原文・
-        # 要約・端末情報は公開リポジトリに出さない。参照だけを置く。
-        BODY="$(printf '%s\n\n%s\n\n%s\n%s\n' \
-          "$GITHUB_REPOSITORY での自動修正で、原因が本リポジトリにあると判断されたため起票しています。" \
-          "フィードバックの内容は公開リポジトリには掲載していません。詳細は下記の非公開の管理チケットを参照してください。" \
-          "## 管理チケット" \
-          "- Issue: $ISSUES_REPO#$ISSUE_NUMBER")"
-        gh issue create \
-          --repo "TrainLCD/$HANDOFF" \
-          --title "フィードバック対応: $ISSUES_REPO#$ISSUE_NUMBER" \
-          --body "$BODY"
-        echo "::notice::TrainLCD/$HANDOFF へ引き継ぎました"
-
     # どこで止まったのかを投稿し終えてから、ジョブを失敗させる。エージェントの
     # ステップがすでに失敗していれば、ここへ来る前からジョブは赤い。問題は
     # ステップが成功したまま結果も PR も残らなかった場合で、これが無いと
     # 緑のまま終わってしまう。
     - name: Fail when the run did not complete
-      if: steps.report.outputs.action == 'failed'
+      if: steps.report.outputs.action == 'failed' || steps.handoff.outputs.ok == 'false'
       shell: bash
       run: |
         echo "::error::自動修正が最後まで進みませんでした。どこで止まったかは issue のコメントに書いてあります"

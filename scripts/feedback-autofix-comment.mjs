@@ -77,6 +77,11 @@ const FAILURE_STAGES = {
     summary: 'エージェントは修正したと書いていますが、PR が見つかりません。',
     hint: 'push か PR の作成に失敗したのかもしれません。',
   },
+  'handoff-failed': {
+    summary:
+      '原因は別のリポジトリにあると分かりましたが、そちらへ issue を立てられませんでした。',
+    hint: '引き継ぎ用トークンの権限を確かめてください。ここで「済み」の目印を残すと次に試せなくなるので、残していません。',
+  },
 };
 
 export const sanitizeReason = (reason) =>
@@ -185,7 +190,14 @@ export const renderFailureComment = ({
 // どの場合でも action は linked / declined / failed のどれかになる。「何も
 // 返さない」を作らないこと。返さないまま終えると、その issue はそのまま
 // 放置される。
-export const decideComment = ({ prUrl, verdictResult, claudeOutcome, runUrl, repo }) => {
+export const decideComment = ({
+  prUrl,
+  verdictResult,
+  claudeOutcome,
+  runUrl,
+  repo,
+  handoffFailed = false,
+}) => {
   const url = typeof prUrl === 'string' ? prUrl.trim() : '';
   const completed = claudeOutcome === 'success';
   const target = repo || DEFAULT_REPO;
@@ -195,6 +207,16 @@ export const decideComment = ({ prUrl, verdictResult, claudeOutcome, runUrl, rep
   }
 
   if (verdictResult?.status === 'ok' && verdictResult.verdict.outcome === 'declined') {
+    // 引き継ぎ先へ issue を立てられなかったときは、declined の目印を残さない。
+    // 残すと prepare が「この issue は結果を書き終えている」と見なし、次に試した
+    // ときも打ち切られる。引き継ぎは起きないまま二度と動かなくなるので、失敗の
+    // 目印に切り替えてやり直せるようにする。
+    if (handoffFailed) {
+      return {
+        action: 'failed',
+        body: renderFailureComment({ stage: 'handoff-failed', runUrl, repo: target }),
+      };
+    }
     return {
       action: 'declined',
       body: renderDeclineComment({
@@ -265,6 +287,7 @@ const main = async () => {
     claudeOutcome: process.env.CLAUDE_OUTCOME ?? '',
     runUrl: process.env.RUN_URL ?? '',
     repo: process.env.TARGET_REPO || 'このリポジトリ',
+    handoffFailed: process.env.HANDOFF_FAILED === 'true',
   });
 
   if (process.env.GITHUB_OUTPUT) {
