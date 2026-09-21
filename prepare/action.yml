@@ -95,7 +95,7 @@ outputs:
     value: ${{ steps.target.outputs.number }}
   eligible:
     description: 対象なら 'true'。これ以外のときは後続を動かさないこと
-    value: ${{ steps.feedback.outputs.eligible }}
+    value: ${{ steps.state.outputs.eligible }}
   branch:
     description: エージェントに切らせるブランチ名
     value: ${{ steps.target.outputs.branch }}
@@ -105,6 +105,12 @@ outputs:
   verdict_path:
     description: エージェントに結果を書かせるファイルのパス
     value: ${{ runner.temp }}/verdict.json
+  failed:
+    description: |
+      対象の issue が分かったあとで準備に失敗したら 'true'。このときジョブは
+      ここでは落とさず、report を走らせて「どこで止まったか」を管理チケットへ
+      書いてから落とす。呼び出し側は report の条件にこの値も入れること。
+    value: ${{ steps.state.outputs.failed }}
 
 runs:
   using: composite
@@ -180,6 +186,10 @@ runs:
     - name: Check for existing work
       id: existing
       if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.number != ''
+      # ここから先の失敗ではジョブを落とさない。落とすと report が走らず、
+      # 管理チケットには何も残らないまま赤くなるだけになる。どこで止まったかは
+      # 最後の Summarize preparation がまとめ、report が書いてから落とす。
+      continue-on-error: true
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
@@ -222,7 +232,9 @@ runs:
     # 行く。本文は信用できない入力なので、シェル変数へ展開せず JSON のまま
     # スクリプトへ渡す。
     - name: Fetch feedback issue
+      id: fetch
       if: steps.guard.outputs.enabled == 'true' && steps.existing.outputs.found == 'false'
+      continue-on-error: true
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.issues_repo_token }}
@@ -237,6 +249,7 @@ runs:
     - name: Evaluate and sanitize
       id: feedback
       if: steps.guard.outputs.enabled == 'true' && steps.existing.outputs.found == 'false'
+      continue-on-error: true
       shell: bash
       env:
         ISSUE_JSON_PATH: ${{ runner.temp }}/issue.json
@@ -251,6 +264,7 @@ runs:
     - name: Compose the prompt
       id: prompt
       if: steps.feedback.outputs.eligible == 'true'
+      continue-on-error: true
       shell: bash
       env:
         TARGET_REPO: ${{ github.repository }}
@@ -280,3 +294,43 @@ runs:
           cat "$RUNNER_TEMP/prompt.md"
           echo "FEEDBACK_AUTOFIX_PROMPT_EOF"
         } >> "$GITHUB_OUTPUT"
+
+    # ここまでの結果をまとめる。continue-on-error を付けた 4 つはジョブを落とさ
+    # ないので、失敗したかどうかは outcome を見ないと分からない。
+    #
+    # 対象の issue が分かる前に落ちた場合は failed にしない。管理チケットの番号が
+    # 無く、report は書き込む先を決められない。対象でなかった場合も failed には
+    # しない。何も書かずに終えるのが設計どおりの動きだから。
+    - name: Summarize preparation
+      id: state
+      shell: bash
+      env:
+        ISSUE_NUMBER: ${{ steps.target.outputs.number }}
+        ENABLED: ${{ steps.guard.outputs.enabled }}
+        ELIGIBLE: ${{ steps.feedback.outputs.eligible }}
+        EXISTING_OUTCOME: ${{ steps.existing.outcome }}
+        FETCH_OUTCOME: ${{ steps.fetch.outcome }}
+        EVALUATE_OUTCOME: ${{ steps.feedback.outcome }}
+        PROMPT_OUTCOME: ${{ steps.prompt.outcome }}
+      run: |
+        set -euo pipefail
+        FAILED=false
+        if [ -n "$ISSUE_NUMBER" ] && [ "$ENABLED" = "true" ]; then
+          for OUTCOME in "$EXISTING_OUTCOME" "$FETCH_OUTCOME" \
+            "$EVALUATE_OUTCOME" "$PROMPT_OUTCOME"; do
+            if [ "$OUTCOME" = "failure" ]; then
+              FAILED=true
+              break
+            fi
+          done
+        fi
+        if [ "$FAILED" = "true" ]; then
+          echo "::error::準備の途中で止まりました。結果を管理チケットへ書いてから終わります"
+          echo "failed=true" >> "$GITHUB_OUTPUT"
+          # 途中で止まったときはプロンプトが揃っていないので、エージェントは
+          # 動かさない。
+          echo "eligible=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "failed=false" >> "$GITHUB_OUTPUT"
+        echo "eligible=${ELIGIBLE:-false}" >> "$GITHUB_OUTPUT"

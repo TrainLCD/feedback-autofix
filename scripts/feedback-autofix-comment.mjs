@@ -59,7 +59,7 @@ const HANDOFF_REPOSITORIES = {
 const FAILURE_STAGES = {
   'not-reached': {
     summary: '準備の途中で止まり、エージェントが動き出すところまで進みませんでした。',
-    hint: 'checkout・依存のインストール・issue の取得のどれかで失敗しています。',
+    hint: 'エージェントを動かす前の段取りのどこかで失敗しています。',
   },
   'agent-failed': {
     summary: 'エージェントの実行が途中で止まりました。',
