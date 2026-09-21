@@ -113,8 +113,10 @@ runs:
         #
         # 検索そのものが失敗したら、issue は立てずにここで終える。「1 件も無い」のか
         # 「調べられなかった」のかを区別できないまま作ると、スタブが 2 つ並ぶ。
-        # 呼び出し側の concurrency はスタブ issue の番号で束ねるので、番号が違う
-        # 2 つは同時に走る。片方がもう片方を目印で止めることはできない。
+        #
+        # この確認は、同じ管理チケットの実行が直列に走ることが前提。並行して走ると
+        # 両方が「1 件も無い」を受け取ってから両方が作る。呼び出し側の concurrency は
+        # 題名で束ねること。README の「使い方」に理由を書いてある。
         if ! EXISTING="$(gh issue list --repo "TrainLCD/$HANDOFF" --state all --limit 100 \
           --search "in:title \"$ISSUES_REPO#$ISSUE_NUMBER\"" \
           --json title,number \
