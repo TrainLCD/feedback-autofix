@@ -257,7 +257,11 @@ git ls-remote https://github.com/TrainLCD/feedback-autofix refs/heads/master
 git fetch --depth 1 https://github.com/TrainLCD/feedback-autofix \
   406de875a89dd1e640f8b66b71d4de9516a952ca
 git log -1 FETCH_HEAD
+git show FETCH_HEAD:prepare/action.yml
 ```
+
+`git log` で分かるのはコミットの題名と日付だけです。固定した中身そのものを読むには
+`git show <コミット>:<パス>` を使ってください。
 
 タグを打った場合は、注釈付きかどうかで指す先が変わります。使うのはタグオブジェクト
 ではなく `refs/tags/<タグ>^{}` の指すコミットです。`anthropics/claude-code-action` の
