@@ -207,8 +207,11 @@ jobs:
             --allowedTools "Edit,Read,Write,Glob,Grep,TodoWrite,Bash(npm:*),Bash(git:*),Bash(gh:*),Bash(node:*)"
 
       # always() を外さないこと。エージェントが失敗した場合こそ報告が要る。
+      # failed も外さないこと。prepare が対象だと分かったあとで落ちた場合、
+      # eligible は 'true' になりません。この条件が無いと report が走らず、
+      # ジョブが赤くなるだけで管理チケットには何も残りません。
       - uses: TrainLCD/feedback-autofix/report@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
-        if: ${{ always() && steps.prepare.outputs.eligible == 'true' }}
+        if: ${{ always() && (steps.prepare.outputs.eligible == 'true' || steps.prepare.outputs.failed == 'true') }}
         with:
           issue_number: ${{ steps.prepare.outputs.issue_number }}
           issues_repo_token: ${{ secrets.ISSUES_REPO_TOKEN }}
@@ -369,6 +372,13 @@ Action が行い、エージェントには `Bash(git:*)` と `Bash(gh:*)` を�
 **結果は必ず issue へ返します。** PR が出来たならそのリンク、直せないなら理由、
 最後まで進まなかったならどこで止まったのかを投稿します。何も言わずに終わる
 場合は作っていません。
+
+**prepare は対象だと分かったあとでは自分から落ちません。** 管理チケットの番号が
+決まったあとのステップには `continue-on-error: true` を付けてあります。ここで
+ジョブが落ちると report まで届きません。`ISSUES_REPO_TOKEN` の期限切れやスクリプトの
+エラーが、管理チケットに何も残らないまま終わってしまいます。失敗したかどうかは
+`failed` 出力で返します。report が「準備の途中で止まりました」と書いてから、
+ジョブを落とします。
 
 ## 開発
 
