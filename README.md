@@ -242,21 +242,26 @@ jobs:
 - uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
 ```
 
-**固定する SHA を選ぶとき**は `dev` の先頭を取ります。
+**固定する SHA を選ぶとき**は `master` の先頭を取ります。`dev` は使いません。
+`dev` には `master` へまだ反映していない変更が入っていることがあります。
 
 ```bash
-git ls-remote https://github.com/TrainLCD/feedback-autofix refs/heads/dev
+git ls-remote https://github.com/TrainLCD/feedback-autofix refs/heads/master
 ```
 
-**固定済みの SHA が何なのかを確かめるとき**は、この方法は使えません。`dev` が進むと
-先頭が変わるので、固定した SHA とは一致しなくなります。コミットを直接取ってきて
-中身を読んでください。ブランチが何周していても使えます。
+**固定済みの SHA が何なのかを確かめるとき**は、この方法は使えません。`master` が
+進むと先頭が変わるので、固定した SHA とは一致しなくなります。コミットを直接取って
+きて中身を読んでください。ブランチが何周していても使えます。
 
 ```bash
 git fetch --depth 1 https://github.com/TrainLCD/feedback-autofix \
   406de875a89dd1e640f8b66b71d4de9516a952ca
 git log -1 FETCH_HEAD
+git show FETCH_HEAD:prepare/action.yml
 ```
+
+`git log` で分かるのはコミットの題名と日付だけです。固定した中身そのものを読むには
+`git show <コミット>:<パス>` を使ってください。
 
 タグを打った場合は、注釈付きかどうかで指す先が変わります。使うのはタグオブジェクト
 ではなく `refs/tags/<タグ>^{}` の指すコミットです。`anthropics/claude-code-action` の
