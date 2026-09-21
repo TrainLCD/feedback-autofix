@@ -239,10 +239,20 @@ jobs:
 - uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
 ```
 
-SHA は `git ls-remote` で確かめてください。
+**固定する SHA を選ぶとき**は `dev` の先頭を取ります。
 
 ```bash
 git ls-remote https://github.com/TrainLCD/feedback-autofix refs/heads/dev
+```
+
+**固定済みの SHA が何なのかを確かめるとき**は、この方法は使えません。`dev` が進むと
+先頭が変わるので、固定した SHA とは一致しなくなります。コミットを直接取ってきて
+中身を読んでください。ブランチが何周していても使えます。
+
+```bash
+git fetch --depth 1 https://github.com/TrainLCD/feedback-autofix \
+  406de875a89dd1e640f8b66b71d4de9516a952ca
+git log -1 FETCH_HEAD
 ```
 
 タグを打った場合は、注釈付きかどうかで指す先が変わります。使うのはタグオブジェクト
