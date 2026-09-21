@@ -1,15 +1,37 @@
-# フィードバック issue を読み、自動修正の対象かどうかを見極めて、エージェントへ
-# 渡すプロンプトまで用意する。呼び出し側はこのあと、対象だったときだけ
-# ツールチェーンを整えて Claude Code Action を走らせる。
+# 自分のリポジトリに立ったスタブ issue を起点に、自動修正の対象かどうかを
+# 見極めて、エージェントへ渡すプロンプトまで用意する。呼び出し側はこのあと、
+# 対象だったときだけツールチェーンを整えて Claude Code Action を走らせる。
 #
-# 重い準備（依存のインストールなど）より先にここを通すこと。届く issue の多くは
-# 対象外なので、先に判定しておけばその分の時間と費用がかからない。
+# スタブ issue は TrainLCD/Functions のフィードバックトリアージが立てる。原因の
+# リポジトリは Worker が本文を読んで判定済みなので、ここでは「自分のところに
+# 立っていること」を振り分けの答えとして扱う。判定をやり直さない。
+#
+# 重い準備（依存のインストールなど）より先にここを通すこと。立つ issue のうち
+# ラベル条件まで満たすものは一部なので、先に判定しておけばその分の時間と費用が
+# かからない。
 name: Prepare feedback autofix
 description: フィードバック issue を取得し、対象判定・無害化・プロンプト生成までを行う
 
 inputs:
+  stub_issue_number:
+    description: |
+      このリポジトリに立ったスタブ issue の番号。本文から管理チケットの番号を
+      取り出す。issue_number を直接渡す場合は省略できる。
+    required: false
+    default: ""
   issue_number:
-    description: TrainLCD/Issues の issue 番号
+    description: |
+      TrainLCD/Issues の issue 番号。手動実行でスタブ issue を介さず動かすときに
+      使う。stub_issue_number より優先される。
+    required: false
+    default: ""
+  allowed_authors:
+    description: |
+      スタブ issue の作成者として認めるアカウントの数値 ID（CSV）。対象リポジトリは
+      公開されていて issue は誰でも立てられるため、書式だけを見て管理チケットの
+      番号を受け取ると、第三者が立てた issue から非公開チケットを読み出せてしまう。
+      login ではなく ID で照合する。login は変更できるうえ、手放された名前は他人が
+      取得できる。空のままなら、どのスタブ issue も対象にならない。
     required: true
   issues_repo:
     description: フィードバック issue が置かれているリポジトリ
@@ -68,6 +90,9 @@ inputs:
     default: TinyKitten
 
 outputs:
+  issue_number:
+    description: 解決した TrainLCD/Issues の issue 番号
+    value: ${{ steps.target.outputs.number }}
   eligible:
     description: 対象なら 'true'。これ以外のときは後続を動かさないこと
     value: ${{ steps.feedback.outputs.eligible }}
@@ -84,19 +109,48 @@ outputs:
 runs:
   using: composite
   steps:
-    # issue 番号は dispatch を投げてきた側から渡される値なので、数字だけで
-    # できていることを確かめてから後ろのコマンドへ渡す。
+    # スタブ issue を取ってくる。イベントのペイロードにも本文は入るが、式へ直接
+    # 展開すると本文がそのままシェルへ渡る。API から取り直してファイルに落とし、
+    # 解析はスクリプトに任せる。
+    #
+    # 本文だけでなく issue 全体を落とすのは、作成者を見るため。誰が立てたかを
+    # 確かめずに管理チケットの番号を受け取ると、第三者が立てた issue からでも
+    # 非公開チケットの本文を取得してエージェントへ渡してしまう。
+    - name: Read the stub issue
+      id: stub
+      if: inputs.issue_number == '' && inputs.stub_issue_number != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        STUB_NUMBER: ${{ inputs.stub_issue_number }}
+        ISSUES_REPO: ${{ inputs.issues_repo }}
+        ALLOWED_AUTHOR_IDS: ${{ inputs.allowed_authors }}
+        STUB_ISSUE_JSON_PATH: ${{ runner.temp }}/stub-issue.json
+      run: |
+        set -euo pipefail
+        if ! printf '%s' "$STUB_NUMBER" | grep -Eq '^[0-9]+$'; then
+          echo "::error::スタブ issue の番号が不正です"
+          exit 1
+        fi
+        gh api "repos/$GITHUB_REPOSITORY/issues/$STUB_NUMBER" \
+          > "$STUB_ISSUE_JSON_PATH"
+        node "${{ github.action_path }}/../scripts/stub-issue.mjs"
+
+    # 管理チケットの番号を確定させる。手で渡された値も、スタブから取り出した値も、
+    # 数字だけでできていることをここで確かめてから後ろのコマンドへ渡す。
     - name: Resolve target issue
       id: target
       shell: bash
       env:
-        RAW_ISSUE_NUMBER: ${{ inputs.issue_number }}
+        RAW_ISSUE_NUMBER: ${{ inputs.issue_number || steps.stub.outputs.number }}
         BRANCH_PREFIX: ${{ inputs.branch_prefix }}
       run: |
         set -euo pipefail
         if ! printf '%s' "$RAW_ISSUE_NUMBER" | grep -Eq '^[0-9]+$'; then
-          echo "::error::issue 番号が不正です"
-          exit 1
+          echo "::notice::管理チケットの番号を特定できないため、ここで終わります"
+          echo "number=" >> "$GITHUB_OUTPUT"
+          echo "branch=" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
         echo "number=$RAW_ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
         echo "branch=${BRANCH_PREFIX}${RAW_ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
@@ -125,7 +179,7 @@ runs:
     #    同じ調査をやり直し、同じコメントが積み上がっていく
     - name: Check for existing work
       id: existing
-      if: steps.guard.outputs.enabled == 'true'
+      if: steps.guard.outputs.enabled == 'true' && steps.target.outputs.number != ''
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
@@ -147,10 +201,16 @@ runs:
           exit 0
         fi
         # --paginate と --jq を一緒に使うとページごとに jq が走るので、件数は
-        # 行数で数える。目印の綴りは feedback-autofix-comment.mjs の MARKER と揃えてある。
+        # 行数で数える。目印の綴りは feedback-autofix-comment.mjs の markerFor と
+        # 揃えてある。リポジトリ名まで見るのは、同じ issue を 3 リポジトリが順に
+        # 扱うため。共通の綴りで探すと、先に結果を書いたリポジトリのコメントで
+        # 自分まで止まる。
+        # 目印はシェルで組み立て、jq へは env 経由で渡す。jq の式に直接埋めると
+        # 引用の入れ子が深くなり、綴りを間違えても静かに 0 件になる。
+        export MARKER="<!-- auto-fix-from-feedback:$GITHUB_REPOSITORY -->"
         COMMENTED="$(GH_TOKEN="$ISSUES_REPO_TOKEN" gh api \
           "repos/$ISSUES_REPO/issues/$ISSUE_NUMBER/comments" --paginate \
-          --jq '.[] | select(.body | startswith("<!-- auto-fix-from-feedback -->")) | .id' | wc -l)"
+          --jq '.[] | select(.body | startswith(env.MARKER)) | .id' | wc -l)"
         if [ "$COMMENTED" != "0" ]; then
           echo "::notice::この issue は結果を書き終えているため処理を中止します"
           echo "found=true" >> "$GITHUB_OUTPUT"
@@ -205,6 +265,9 @@ runs:
         PR_TEMPLATE: ${{ inputs.pr_template }}
         ISSUES_REPO: ${{ inputs.issues_repo }}
         ISSUE_NUMBER: ${{ steps.target.outputs.number }}
+        # issue_number を直接渡されたときは、スタブ issue を介していない。その
+        # ときに番号を渡すと、エージェントが無関係な issue を Closes で閉じる。
+        STUB_ISSUE_NUMBER: ${{ inputs.issue_number == '' && inputs.stub_issue_number || '' }}
         ASSIGNEE: ${{ inputs.assignee }}
         OUTPUT_PATH: ${{ runner.temp }}/prompt.md
       run: |

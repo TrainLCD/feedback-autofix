@@ -134,7 +134,18 @@ ${renderChecks(checks)}
 - base ブランチ: \`${config.baseBranch}\`
 - コミットメッセージ: 日本語の一文にします。
 - PR 本文: ${prTemplateRule}
-  - 関連 issue として \`Refs ${config.issuesRepo}#${config.issueNumber}\` と書きます。
+  - 関連 issue の節には次のように書きます。${config.stubIssue ? `
+    \`\`\`text
+    Closes #${config.stubIssue}
+    Refs ${config.issuesRepo}#${config.issueNumber}
+    \`\`\`
+    このリポジトリに立っている #${config.stubIssue} が、このフィードバックの
+    受け口です。PR がマージされたら閉じてください。管理チケットは非公開なので
+    参照だけにします。` : `
+    \`\`\`text
+    Refs ${config.issuesRepo}#${config.issueNumber}
+    \`\`\`
+    管理チケットは非公開なので参照だけにします。`}
   - テストの節には、実際に走らせたコマンドの結果を書きます。
 - PR は \`@${config.assignee}\` にアサインします。
 - 本文の冒頭に「このPRはフィードバックを起点に自動生成されました。実機での
@@ -176,6 +187,7 @@ const main = async () => {
     prTemplate: process.env.PR_TEMPLATE ?? '',
     issuesRepo: process.env.ISSUES_REPO || 'TrainLCD/Issues',
     issueNumber: requireEnv('ISSUE_NUMBER'),
+    stubIssue: process.env.STUB_ISSUE_NUMBER ?? '',
     assignee: process.env.ASSIGNEE || 'TinyKitten',
   });
   await writeFile(requireEnv('OUTPUT_PATH'), prompt, 'utf8');
