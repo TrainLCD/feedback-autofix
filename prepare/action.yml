@@ -25,6 +25,14 @@ inputs:
       使う。stub_issue_number より優先される。
     required: false
     default: ""
+  allowed_authors:
+    description: |
+      スタブ issue の作成者として認めるアカウントの数値 ID（CSV）。対象リポジトリは
+      公開されていて issue は誰でも立てられるため、書式だけを見て管理チケットの
+      番号を受け取ると、第三者が立てた issue から非公開チケットを読み出せてしまう。
+      login ではなく ID で照合する。login は変更できるうえ、手放された名前は他人が
+      取得できる。空のままなら、どのスタブ issue も対象にならない。
+    required: true
   issues_repo:
     description: フィードバック issue が置かれているリポジトリ
     required: false
@@ -101,9 +109,13 @@ outputs:
 runs:
   using: composite
   steps:
-    # スタブ issue の本文を取ってくる。イベントのペイロードにも本文は入るが、
-    # 式へ直接展開すると本文がそのままシェルへ渡る。API から取り直してファイルに
-    # 落とし、解析はスクリプトに任せる。
+    # スタブ issue を取ってくる。イベントのペイロードにも本文は入るが、式へ直接
+    # 展開すると本文がそのままシェルへ渡る。API から取り直してファイルに落とし、
+    # 解析はスクリプトに任せる。
+    #
+    # 本文だけでなく issue 全体を落とすのは、作成者を見るため。誰が立てたかを
+    # 確かめずに管理チケットの番号を受け取ると、第三者が立てた issue からでも
+    # 非公開チケットの本文を取得してエージェントへ渡してしまう。
     - name: Read the stub issue
       id: stub
       if: inputs.issue_number == '' && inputs.stub_issue_number != ''
@@ -112,7 +124,8 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         STUB_NUMBER: ${{ inputs.stub_issue_number }}
         ISSUES_REPO: ${{ inputs.issues_repo }}
-        STUB_BODY_PATH: ${{ runner.temp }}/stub-body.md
+        ALLOWED_AUTHOR_IDS: ${{ inputs.allowed_authors }}
+        STUB_ISSUE_JSON_PATH: ${{ runner.temp }}/stub-issue.json
       run: |
         set -euo pipefail
         if ! printf '%s' "$STUB_NUMBER" | grep -Eq '^[0-9]+$'; then
@@ -120,7 +133,7 @@ runs:
           exit 1
         fi
         gh api "repos/$GITHUB_REPOSITORY/issues/$STUB_NUMBER" \
-          --jq '.body // ""' > "$STUB_BODY_PATH"
+          > "$STUB_ISSUE_JSON_PATH"
         node "${{ github.action_path }}/../scripts/stub-issue.mjs"
 
     # 管理チケットの番号を確定させる。手で渡された値も、スタブから取り出した値も、
@@ -252,7 +265,9 @@ runs:
         PR_TEMPLATE: ${{ inputs.pr_template }}
         ISSUES_REPO: ${{ inputs.issues_repo }}
         ISSUE_NUMBER: ${{ steps.target.outputs.number }}
-        STUB_ISSUE_NUMBER: ${{ inputs.stub_issue_number }}
+        # issue_number を直接渡されたときは、スタブ issue を介していない。その
+        # ときに番号を渡すと、エージェントが無関係な issue を Closes で閉じる。
+        STUB_ISSUE_NUMBER: ${{ inputs.issue_number == '' && inputs.stub_issue_number || '' }}
         ASSIGNEE: ${{ inputs.assignee }}
         OUTPUT_PATH: ${{ runner.temp }}/prompt.md
       run: |

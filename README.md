@@ -63,6 +63,29 @@ StationAPI / Functions の 3 リポジトリから共通で使います。
 目印を共通の綴りにしないでください。最初に結果を書いたリポジトリのコメントが
 残りの 2 つを止め、手動で叩いても動かなくなります。
 
+## 誰が立てた issue かを確かめます
+
+対象の 3 リポジトリはどれも公開されていて、issue は誰でも立てられます。本文の
+書式だけを見て管理チケットの番号を受け取ると、第三者が
+
+```text
+## 管理チケット
+- Issue: TrainLCD/Issues#1200
+```
+
+と書いた issue を立てるだけで、`ISSUES_REPO_TOKEN` が非公開チケットの本文を
+取りに行き、エージェントへ渡してしまいます。そこから公開 PR に内容が出ます。
+
+そのため `allowed_authors` に挙げたアカウントが立てた issue だけを対象にします。
+照合するのは login ではなく数値の ID です。login は本人が変更でき、手放された
+名前は他人が取得できますが、ID は作り直せません。`allowed_authors` が空のときは
+どのスタブ issue も対象になりません。設定を忘れたまま素通りするより、動かないほうが
+気づけるためです。
+
+現在スタブ issue を立てているのは TinyKitten（ID `32848922`）です。`TrainLCD/MobileApp`
+の issue #6994 を API で取得すると `user.id` がこの値になります。Worker のトークンを
+別のアカウントへ移したら、3 リポジトリの `allowed_authors` も一緒に変えてください。
+
 ## 使い方
 
 ```yaml
@@ -107,6 +130,8 @@ jobs:
         with:
           stub_issue_number: ${{ github.event.issue.number }}
           issue_number: ${{ inputs.issue_number }}
+          # スタブ issue の作成者として認める数値 ID。詳しくは下記。
+          allowed_authors: "32848922"
           issues_repo_token: ${{ secrets.ISSUES_REPO_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

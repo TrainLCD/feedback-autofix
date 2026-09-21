@@ -12,6 +12,12 @@
 //
 // 原因のリポジトリは Worker が本文を読んで判定済みなので、ここでは受け取った
 // スタブが自分のリポジトリに立っていること自体を振り分けの答えとして扱う。
+//
+// ただし「自分のリポジトリに立っている」だけでは足りない。対象の 3 リポジトリは
+// どれも公開なので、issue は誰でも立てられる。本文の書式しか見ないと、第三者が
+// 管理チケットの番号を書いた issue を立てるだけで、非公開チケットの本文を
+// ISSUES_REPO_TOKEN で取得させ、エージェントへ渡せてしまう。作成者を先に
+// 確かめる。
 
 import { realpathSync } from 'node:fs';
 import { appendFile, readFile } from 'node:fs/promises';
@@ -22,8 +28,34 @@ import { pathToFileURL } from 'node:url';
 // フィードバックの本文として取りにいってしまう。
 const TICKET_PATTERN = /^- Issue:\s*([\w.-]+\/[\w.-]+)#(\d+)\s*$/m;
 
-export const parseStubIssue = (body, expectedRepo = 'TrainLCD/Issues') => {
-  const matched = TICKET_PATTERN.exec(String(body ?? ''));
+// 作成者は login ではなく数値の id で照合する。login は本人が変えられるうえ、
+// 手放された名前は他人が取得できる。id は作り直せない。
+export const parseAuthorIds = (raw) =>
+  String(raw ?? '')
+    .split(/[\s,]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => /^\d+$/.test(entry));
+
+export const parseStubIssue = (issue, options = {}) => {
+  const { expectedRepo = 'TrainLCD/Issues', allowedAuthorIds = [] } = options;
+
+  // 許可リストが空なら通さない。設定を忘れたときに素通りするより、動かないほうが
+  // 気づける。
+  if (allowedAuthorIds.length === 0) {
+    return { found: false, reason: '作成者の許可リストが設定されていません' };
+  }
+  const authorId = issue?.user?.id;
+  if (authorId === undefined || authorId === null) {
+    return { found: false, reason: '作成者を特定できません' };
+  }
+  if (!allowedAuthorIds.includes(String(authorId))) {
+    return {
+      found: false,
+      reason: `許可されていない作成者の issue です (id: ${String(authorId).slice(0, 32)})`,
+    };
+  }
+
+  const matched = TICKET_PATTERN.exec(String(issue?.body ?? ''));
   if (!matched) {
     return { found: false, reason: '管理チケットへの参照が本文にありません' };
   }
@@ -46,8 +78,11 @@ const requireEnv = (name) => {
 };
 
 const main = async () => {
-  const body = await readFile(requireEnv('STUB_BODY_PATH'), 'utf8');
-  const result = parseStubIssue(body, process.env.ISSUES_REPO || 'TrainLCD/Issues');
+  const issue = JSON.parse(await readFile(requireEnv('STUB_ISSUE_JSON_PATH'), 'utf8'));
+  const result = parseStubIssue(issue, {
+    expectedRepo: process.env.ISSUES_REPO || 'TrainLCD/Issues',
+    allowedAuthorIds: parseAuthorIds(process.env.ALLOWED_AUTHOR_IDS),
+  });
 
   if (process.env.GITHUB_OUTPUT) {
     await appendFile(
