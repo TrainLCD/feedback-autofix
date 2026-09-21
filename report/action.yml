@@ -108,14 +108,21 @@ runs:
 
         # 既に同じ管理チケットのスタブが立っていれば作り直さない。コメントの投稿に
         # 失敗して再実行したとき、ここを見ないと引き継ぎ先に同じ issue が並ぶ。
-        # 検索の索引に載るまでには間があるので取りこぼすことはあるが、その場合でも
-        # 引き継ぎ先は自分の目印で打ち切られるので、余分な issue が 1 つ残るだけ。
         # 題名は完全一致で確かめる。検索の語句だけに頼ると、番号の一部が一致する
         # 別の issue を拾う。
-        EXISTING="$(gh issue list --repo "TrainLCD/$HANDOFF" --state all --limit 100 \
+        #
+        # 検索そのものが失敗したら、issue は立てずにここで終える。「1 件も無い」のか
+        # 「調べられなかった」のかを区別できないまま作ると、スタブが 2 つ並ぶ。
+        # 呼び出し側の concurrency はスタブ issue の番号で束ねるので、番号が違う
+        # 2 つは同時に走る。片方がもう片方を目印で止めることはできない。
+        if ! EXISTING="$(gh issue list --repo "TrainLCD/$HANDOFF" --state all --limit 100 \
           --search "in:title \"$ISSUES_REPO#$ISSUE_NUMBER\"" \
           --json title,number \
-          --jq 'map(select(.title == env.TITLE)) | .[0].number // empty')" || EXISTING=""
+          --jq 'map(select(.title == env.TITLE)) | .[0].number // empty')"; then
+          echo "::error::TrainLCD/$HANDOFF に同じ issue が無いかを確かめられませんでした"
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         if [ -n "$EXISTING" ]; then
           echo "::notice::TrainLCD/$HANDOFF には #$EXISTING が既にあるため、新しくは立てません"
           echo "ok=true" >> "$GITHUB_OUTPUT"
