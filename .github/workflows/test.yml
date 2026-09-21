@@ -1,0 +1,22 @@
+# scripts/ のテスト。Node 標準のテストランナーだけで動くので、依存の
+# インストールを挟まない。対象スクリプトは npm 依存を静的 import しないこと。
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm test

@@ -1,0 +1,84 @@
+# 自動修正の結果を issue へ返し、最後まで進まなかった場合はジョブを落とす。
+#
+# 呼び出し側は always() でこのアクションを呼ぶこと。エージェントのステップが
+# 失敗した場合や、そこまで到達しなかった場合こそ報告が要る。何も言わずに
+# 終わると、issue を見た人には「調べたうえで何もしなかった」のか「そもそも
+# 動かなかった」のかが分からず、手つかずの issue を対応済みだと思って
+# 読み飛ばすことになる。
+name: Report feedback autofix outcome
+description: PR のリンク・直せない理由・止まった箇所のいずれかを issue へ投稿する
+
+inputs:
+  issue_number:
+    description: TrainLCD/Issues の issue 番号
+    required: true
+  issues_repo:
+    description: フィードバック issue が置かれているリポジトリ
+    required: false
+    default: TrainLCD/Issues
+  issues_repo_token:
+    description: issues_repo の Issues (read and write) が付いたトークン
+    required: true
+  github_token:
+    description: 対象リポジトリの PR を読むためのトークン
+    required: true
+  branch:
+    description: prepare が出したブランチ名
+    required: true
+  verdict_path:
+    description: エージェントが結果を書いたファイルのパス
+    required: true
+  claude_outcome:
+    description: エージェントのステップの outcome。結果が無いとき、どこまで進んだかの判断に使う
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build the comment
+      id: report
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        BRANCH: ${{ inputs.branch }}
+        VERDICT_PATH: ${{ inputs.verdict_path }}
+        CLAUDE_OUTCOME: ${{ inputs.claude_outcome }}
+        TARGET_REPO: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        OUTPUT_PATH: ${{ runner.temp }}/issue-comment.md
+      run: |
+        set -euo pipefail
+        # 取得に失敗しても報告は続ける。PR が見つからなかったときにどう書くかは
+        # スクリプト側で決めている。
+        PR_URL="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json url --jq '.[0].url // empty' || true)"
+        export PR_URL
+        if [ -n "$PR_URL" ]; then
+          echo "作成された PR: $PR_URL" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        node "${{ github.action_path }}/../scripts/feedback-autofix-comment.mjs"
+
+    # 投稿だけを別のステップに分けてあるのは、Issues リポジトリのトークンを
+    # 本文を組み立てる処理から離しておくため。
+    - name: Post the comment
+      if: steps.report.outputs.action != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.issues_repo_token }}
+        ISSUES_REPO: ${{ inputs.issues_repo }}
+        ISSUE_NUMBER: ${{ inputs.issue_number }}
+      run: |
+        set -euo pipefail
+        gh issue comment "$ISSUE_NUMBER" \
+          --repo "$ISSUES_REPO" \
+          --body-file "$RUNNER_TEMP/issue-comment.md"
+
+    # どこで止まったのかを投稿し終えてから、ジョブを失敗させる。エージェントの
+    # ステップがすでに失敗していれば、ここへ来る前からジョブは赤い。問題は
+    # ステップが成功したまま結果も PR も残らなかった場合で、これが無いと
+    # 緑のまま終わってしまう。
+    - name: Fail when the run did not complete
+      if: steps.report.outputs.action == 'failed'
+      shell: bash
+      run: |
+        echo "::error::自動修正が最後まで進みませんでした。どこで止まったかは issue のコメントに書いてあります"
+        exit 1

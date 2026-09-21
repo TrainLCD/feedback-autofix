@@ -1,0 +1,219 @@
+# フィードバック issue を読み、自動修正の対象かどうかを見極めて、エージェントへ
+# 渡すプロンプトまで用意する。呼び出し側はこのあと、対象だったときだけ
+# ツールチェーンを整えて Claude Code Action を走らせる。
+#
+# 重い準備（依存のインストールなど）より先にここを通すこと。届く issue の多くは
+# 対象外なので、先に判定しておけばその分の時間と費用がかからない。
+name: Prepare feedback autofix
+description: フィードバック issue を取得し、対象判定・無害化・プロンプト生成までを行う
+
+inputs:
+  issue_number:
+    description: TrainLCD/Issues の issue 番号
+    required: true
+  issues_repo:
+    description: フィードバック issue が置かれているリポジトリ
+    required: false
+    default: TrainLCD/Issues
+  issues_repo_token:
+    description: issues_repo の Issues (read and write) が付いたトークン
+    required: true
+  github_token:
+    description: 対象リポジトリのブランチと PR を読むためのトークン
+    required: true
+  anthropic_api_key:
+    description: 未設定なら何もせず終わるため、ここでは存在確認だけに使う
+    required: true
+  triage_labels:
+    description: いずれか 1 つが必要なトリアージラベル（CSV）
+    required: false
+    default: ""
+  category_labels:
+    description: いずれか 1 つが必要なカテゴリラベル（CSV）
+    required: false
+    default: ""
+  exclude_labels:
+    description: 1 つでも付いていれば対象外にするラベル（CSV）
+    required: false
+    default: ""
+  branch_prefix:
+    description: 作らせるブランチの接頭辞
+    required: false
+    default: fix/feedback-
+  base_branch:
+    description: PR の base ブランチ
+    required: false
+    default: dev
+  guidelines_file:
+    description: エージェントに読ませる規約ファイル
+    required: false
+    default: AGENTS.md
+  checks:
+    description: PR を作る前に通すコマンド（改行区切り）
+    required: true
+  scope:
+    description: このリポジトリで手を入れてよい範囲（箇条書きのまま渡す）
+    required: true
+  handoffs:
+    description: 引き継ぎ先の候補（CSV）。自分自身は入れないこと
+    required: false
+    default: ""
+  pr_template:
+    description: PR テンプレートのパス。無ければ空文字
+    required: false
+    default: ""
+  assignee:
+    description: PR のアサイン先
+    required: false
+    default: TinyKitten
+
+outputs:
+  eligible:
+    description: 対象なら 'true'。これ以外のときは後続を動かさないこと
+    value: ${{ steps.feedback.outputs.eligible }}
+  branch:
+    description: エージェントに切らせるブランチ名
+    value: ${{ steps.target.outputs.branch }}
+  prompt:
+    description: Claude Code Action へ渡すプロンプト
+    value: ${{ steps.prompt.outputs.text }}
+  verdict_path:
+    description: エージェントに結果を書かせるファイルのパス
+    value: ${{ runner.temp }}/verdict.json
+
+runs:
+  using: composite
+  steps:
+    # issue 番号は dispatch を投げてきた側から渡される値なので、数字だけで
+    # できていることを確かめてから後ろのコマンドへ渡す。
+    - name: Resolve target issue
+      id: target
+      shell: bash
+      env:
+        RAW_ISSUE_NUMBER: ${{ inputs.issue_number }}
+        BRANCH_PREFIX: ${{ inputs.branch_prefix }}
+      run: |
+        set -euo pipefail
+        if ! printf '%s' "$RAW_ISSUE_NUMBER" | grep -Eq '^[0-9]+$'; then
+          echo "::error::issue 番号が不正です"
+          exit 1
+        fi
+        echo "number=$RAW_ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+        echo "branch=${BRANCH_PREFIX}${RAW_ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+
+    - name: Check credentials
+      id: guard
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        ISSUES_REPO_TOKEN: ${{ inputs.issues_repo_token }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ANTHROPIC_API_KEY:-}" ] || [ -z "${ISSUES_REPO_TOKEN:-}" ]; then
+          echo "::warning::ANTHROPIC_API_KEY か ISSUES_REPO_TOKEN が未設定のため自動修正をスキップします"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    # 同じ issue を二度扱わないようにする。見るのは次の 3 つで、それぞれ別の
+    # 状態に対応している。
+    #  - ブランチ: PR を出す前に実行が落ちると、これだけが残る
+    #  - PR: ブランチを消したあとの merged / closed を見つける
+    #  - issue のコメント: 「直せない」と書いて終えたかどうかを見る。この場合は
+    #    PR もブランチも残らないので、ここを見ないとラベルが付き直すたびに
+    #    同じ調査をやり直し、同じコメントが積み上がっていく
+    - name: Check for existing work
+      id: existing
+      if: steps.guard.outputs.enabled == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        ISSUES_REPO_TOKEN: ${{ inputs.issues_repo_token }}
+        ISSUES_REPO: ${{ inputs.issues_repo }}
+        BRANCH: ${{ steps.target.outputs.branch }}
+        ISSUE_NUMBER: ${{ steps.target.outputs.number }}
+      run: |
+        set -euo pipefail
+        if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" > /dev/null 2>&1; then
+          echo "::notice::ブランチ $BRANCH が既にあるため処理を中止します"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        COUNT="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all --json number --jq 'length')"
+        if [ "$COUNT" != "0" ]; then
+          echo "::notice::$BRANCH の PR が既にあるため処理を中止します"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # --paginate と --jq を一緒に使うとページごとに jq が走るので、件数は
+        # 行数で数える。目印の綴りは feedback-autofix-comment.mjs の MARKER と揃えてある。
+        COMMENTED="$(GH_TOKEN="$ISSUES_REPO_TOKEN" gh api \
+          "repos/$ISSUES_REPO/issues/$ISSUE_NUMBER/comments" --paginate \
+          --jq '.[] | select(.body | startswith("<!-- auto-fix-from-feedback -->")) | .id' | wc -l)"
+        if [ "$COMMENTED" != "0" ]; then
+          echo "::notice::この issue は結果を書き終えているため処理を中止します"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "found=false" >> "$GITHUB_OUTPUT"
+
+    # issue は別のリポジトリ（プライベート）にあるので、専用のトークンで取りに
+    # 行く。本文は信用できない入力なので、シェル変数へ展開せず JSON のまま
+    # スクリプトへ渡す。
+    - name: Fetch feedback issue
+      if: steps.guard.outputs.enabled == 'true' && steps.existing.outputs.found == 'false'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.issues_repo_token }}
+        ISSUES_REPO: ${{ inputs.issues_repo }}
+        ISSUE_NUMBER: ${{ steps.target.outputs.number }}
+      run: |
+        set -euo pipefail
+        gh api "repos/$ISSUES_REPO/issues/$ISSUE_NUMBER" > "$RUNNER_TEMP/issue.json"
+
+    # ラベルの条件をこちら側でも確かめ、個人情報を取り除いた本文を書き出す。
+    # dispatch を投げてきた側の判断だけに頼らないようにするため。
+    - name: Evaluate and sanitize
+      id: feedback
+      if: steps.guard.outputs.enabled == 'true' && steps.existing.outputs.found == 'false'
+      shell: bash
+      env:
+        ISSUE_JSON_PATH: ${{ runner.temp }}/issue.json
+        OUTPUT_PATH: ${{ runner.temp }}/feedback.md
+        TRIAGE_LABELS: ${{ inputs.triage_labels }}
+        CATEGORY_LABELS: ${{ inputs.category_labels }}
+        EXCLUDE_LABELS: ${{ inputs.exclude_labels }}
+      run: node "${{ github.action_path }}/../scripts/feedback-issue.mjs"
+
+    # プロンプトは 3 リポジトリで共通の本文に、リポジトリごとの差分を差し込んで
+    # 組み立てる。文面が各リポジトリに散ると、直すときに 3 か所直すことになる。
+    - name: Compose the prompt
+      id: prompt
+      if: steps.feedback.outputs.eligible == 'true'
+      shell: bash
+      env:
+        TARGET_REPO: ${{ github.repository }}
+        FEEDBACK_PATH: ${{ runner.temp }}/feedback.md
+        VERDICT_PATH: ${{ runner.temp }}/verdict.json
+        GUIDELINES_FILE: ${{ inputs.guidelines_file }}
+        CHECKS: ${{ inputs.checks }}
+        SCOPE: ${{ inputs.scope }}
+        HANDOFFS: ${{ inputs.handoffs }}
+        BRANCH: ${{ steps.target.outputs.branch }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+        PR_TEMPLATE: ${{ inputs.pr_template }}
+        ISSUES_REPO: ${{ inputs.issues_repo }}
+        ISSUE_NUMBER: ${{ steps.target.outputs.number }}
+        ASSIGNEE: ${{ inputs.assignee }}
+        OUTPUT_PATH: ${{ runner.temp }}/prompt.md
+      run: |
+        set -euo pipefail
+        node "${{ github.action_path }}/../scripts/compose-prompt.mjs"
+        # 複数行の値は区切りを決めて渡す。本文は自分で組み立てたものなので、
+        # 区切りと衝突しないことが分かっている。
+        {
+          echo "text<<FEEDBACK_AUTOFIX_PROMPT_EOF"
+          cat "$RUNNER_TEMP/prompt.md"
+          echo "FEEDBACK_AUTOFIX_PROMPT_EOF"
+        } >> "$GITHUB_OUTPUT"

@@ -1,0 +1,9 @@
+{
+  "name": "@trainlcd/feedback-autofix",
+  "private": true,
+  "type": "module",
+  "description": "フィードバックから自動修正 PR を出す composite action",
+  "scripts": {
+    "test": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test scripts/*.test.mjs"
+  }
+}
