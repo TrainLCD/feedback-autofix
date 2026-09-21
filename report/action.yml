@@ -31,16 +31,12 @@ inputs:
   claude_outcome:
     description: エージェントのステップの outcome。結果が無いとき、どこまで進んだかの判断に使う
     required: true
-  dispatch_token:
+  handoff_token:
     description: |
-      引き継ぎ先のリポジトリで Actions を起動できるトークン。空にすると、
+      引き継ぎ先のリポジトリに issue を立てられるトークン。空にすると、
       引き継ぎ先が決まってもコメントに名前を出すだけで、そちらは動かない。
     required: false
     default: ""
-  dispatch_event_type:
-    description: 引き継ぎ先へ投げる repository_dispatch のイベント名
-    required: false
-    default: feedback-auto-fix
 
 outputs:
   action:
@@ -90,27 +86,39 @@ runs:
           --repo "$ISSUES_REPO" \
           --body-file "$RUNNER_TEMP/issue-comment.md"
 
-    # 直せないと分かり、引き継ぎ先も決まっているなら、そのリポジトリを起動する。
-    # ここで回さないと handoff はコメントに名前が出るだけで終わり、向こうの
-    # ワークフローは誰も起動しない。
+    # 直せないと分かり、引き継ぎ先も決まっているなら、そのリポジトリにスタブ
+    # issue を立てる。各リポジトリは自分に立った issue に反応する作りなので、
+    # Worker がトリアージで立てるのと同じ経路に乗せる。
+    #
+    # これは Worker の振り分けが外れたときの訂正経路で、通常は使われない。原因の
+    # リポジトリは Worker が本文を読んで判定済みで、スタブはそこへ立っている。
     #
     # 行ったり来たりは目印が止める。引き継ぎ先が調べ終えて戻してきても、こちらは
-    # すでに自分の目印を残しているので、prepare の時点で打ち切られる。
+    # すでに自分の目印を管理チケットへ残しているので、prepare で打ち切られる。
     - name: Hand off to another repository
-      if: steps.report.outputs.action == 'declined' && steps.report.outputs.handoff != '' && inputs.dispatch_token != ''
+      if: steps.report.outputs.action == 'declined' && steps.report.outputs.handoff != '' && inputs.handoff_token != ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.dispatch_token }}
+        GH_TOKEN: ${{ inputs.handoff_token }}
         HANDOFF: ${{ steps.report.outputs.handoff }}
-        EVENT_TYPE: ${{ inputs.dispatch_event_type }}
+        ISSUES_REPO: ${{ inputs.issues_repo }}
         ISSUE_NUMBER: ${{ inputs.issue_number }}
       run: |
         set -euo pipefail
         # 引き継ぎ先は feedback-autofix-comment.mjs が既知の名前だけに絞った
         # あとの値なので、そのままリポジトリ名として使える。
-        gh api "repos/TrainLCD/$HANDOFF/dispatches" \
-          -f event_type="$EVENT_TYPE" \
-          -F "client_payload[issue_number]=$ISSUE_NUMBER"
+        #
+        # 本文は Worker が立てるスタブと同じ形にする。フィードバックの原文・
+        # 要約・端末情報は公開リポジトリに出さない。参照だけを置く。
+        BODY="$(printf '%s\n\n%s\n\n%s\n%s\n' \
+          "$GITHUB_REPOSITORY での自動修正で、原因が本リポジトリにあると判断されたため起票しています。" \
+          "フィードバックの内容は公開リポジトリには掲載していません。詳細は下記の非公開の管理チケットを参照してください。" \
+          "## 管理チケット" \
+          "- Issue: $ISSUES_REPO#$ISSUE_NUMBER")"
+        gh issue create \
+          --repo "TrainLCD/$HANDOFF" \
+          --title "フィードバック対応: $ISSUES_REPO#$ISSUE_NUMBER" \
+          --body "$BODY"
         echo "::notice::TrainLCD/$HANDOFF へ引き継ぎました"
 
     # どこで止まったのかを投稿し終えてから、ジョブを失敗させる。エージェントの

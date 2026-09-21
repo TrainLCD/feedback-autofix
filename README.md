@@ -9,7 +9,8 @@ StationAPI / Functions の 3 リポジトリから共通で使います。
 
 ## 何をするか
 
-1. `TrainLCD/Issues` の issue を取得し、ラベルの条件を満たすか確かめます。
+0. 自分のリポジトリに立ったスタブ issue の本文から、管理チケットの番号を取ります。
+1. `TrainLCD/Issues` の管理チケットを取得し、ラベルの条件を満たすか確かめます。
 2. 本文から送信者を特定できる節とレポート画像の URL を取り除きます。
 3. 同じ issue を二度扱っていないか、ブランチ・PR・コメントの 3 つで確かめます。
 4. エージェントに渡すプロンプトを組み立てます。
@@ -20,17 +21,41 @@ StationAPI / Functions の 3 リポジトリから共通で使います。
 違うためです。判定より先に重い準備を走らせないよう、`prepare` は必ず先に通して
 ください。届く issue の多くは対象外です。
 
-## 3 リポジトリの回り方
+## 起点はスタブ issue です
 
-`TrainLCD/Issues` のディスパッチャは MobileApp だけを起動します。利用者は
-アプリで症状に出会うので、そこを最初の窓口にしています。
+原因がどのリポジトリにあるかは、`TrainLCD/Functions` のフィードバックトリアージが
+本文を読んで判定済みです。信頼度が `PUBLIC_ISSUE_MIN_CONFIDENCE`（0.7）を超えると、
+そのリポジトリにスタブ issue を立てます。
 
-MobileApp が「原因は StationAPI にある」と判断すると、`report` がその結果を
-issue にコメントしたうえで、StationAPI へ `repository_dispatch` を投げます。
-StationAPI が直せば PR が出て、そこでも直せなければ次の引き継ぎ先へ回ります。
-`dispatch_token` を空にすると、コメントに名前が出るだけで向こうは動きません。
+```text
+アプリ → Worker → TrainLCD/Issues に管理チケット（非公開・原文あり）
+                → 原因のリポジトリにスタブ issue（公開・参照だけ）
+                                    ▼
+                  そのリポジトリの workflow が issues: opened で起動
+                  本文から管理チケット番号を読み、Issues 側から本文を取得
+                  → エージェントが修正 → PR
+```
 
-行ったり来たりは目印が止めます。issue へ書くコメントの目印にはリポジトリ名が
+スタブ issue の本文はこの形です。原文・要約・端末情報は入りません。
+
+```text
+## 管理チケット
+- Issue: TrainLCD/Issues#1277
+- チケットID: `268bc14a-...`
+```
+
+**振り分けをやり直さないでください。** どこかのリポジトリを窓口にして、そこの
+エージェントに原因を調べさせてから回すと、データ起因が多い現状では毎回ムダな
+1 往復になります。自分のところに立っていること自体が振り分けの答えです。
+
+### 振り分けが外れた場合
+
+エージェントが「原因は別のリポジトリにある」と判断したら、`report` がその結果を
+管理チケットにコメントしたうえで、引き継ぎ先に同じ形のスタブ issue を立てます。
+向こうは自分に立った issue に反応するので、経路は Worker のときと同じです。
+`handoff_token` を空にすると、コメントに名前が出るだけで向こうは動きません。
+
+行ったり来たりは目印が止めます。管理チケットへ書くコメントの目印にはリポジトリ名が
 入っていて（`<!-- auto-fix-from-feedback:TrainLCD/MobileApp -->`）、`prepare` は
 自分の目印だけを探します。StationAPI から MobileApp へ戻ってきても、MobileApp は
 すでに自分の目印を残しているので、そこで打ち切られます。
@@ -44,8 +69,10 @@ StationAPI が直せば PR が出て、そこでも直せなければ次の引�
 name: Auto Fix From Feedback
 
 on:
-  repository_dispatch:
-    types: [feedback-auto-fix]
+  # Worker がこのリポジトリに立てるスタブ issue を起点にする。
+  issues:
+    types: [opened]
+  # 取りこぼしをやり直すときと、スタブを介さず動かすときに使う。
   workflow_dispatch:
     inputs:
       issue_number:
@@ -58,7 +85,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: auto-fix-from-feedback-${{ github.event.client_payload.issue_number || inputs.issue_number }}
+  group: auto-fix-from-feedback-${{ github.event.issue.number || inputs.issue_number }}
   cancel-in-progress: false
 
 jobs:
@@ -78,7 +105,8 @@ jobs:
       - uses: TrainLCD/feedback-autofix/prepare@v1
         id: prepare
         with:
-          issue_number: ${{ github.event.client_payload.issue_number || inputs.issue_number }}
+          stub_issue_number: ${{ github.event.issue.number }}
+          issue_number: ${{ inputs.issue_number }}
           issues_repo_token: ${{ secrets.ISSUES_REPO_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -116,14 +144,14 @@ jobs:
       - uses: TrainLCD/feedback-autofix/report@v1
         if: ${{ always() && steps.prepare.outputs.eligible == 'true' }}
         with:
-          issue_number: ${{ github.event.client_payload.issue_number || inputs.issue_number }}
+          issue_number: ${{ steps.prepare.outputs.issue_number }}
           issues_repo_token: ${{ secrets.ISSUES_REPO_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ steps.prepare.outputs.branch }}
           verdict_path: ${{ steps.prepare.outputs.verdict_path }}
           claude_outcome: ${{ steps.claude.outcome }}
-          # 引き継ぎ先の Actions を起動できるトークン。省くと引き継ぎは起きない。
-          dispatch_token: ${{ secrets.HANDOFF_DISPATCH_TOKEN }}
+          # 引き継ぎ先に issue を立てられるトークン。省くと引き継ぎは起きない。
+          handoff_token: ${{ secrets.HANDOFF_ISSUE_TOKEN }}
 ```
 
 ## リポジトリごとに変える入力
@@ -200,15 +228,16 @@ StationAPI の `scope` には `data/*.csv` を含めます。届くフィード�
 | ---- | ---- |
 | `ANTHROPIC_API_KEY` | Claude Code Action の認証 |
 | `ISSUES_REPO_TOKEN` | `TrainLCD/Issues` の issue 取得とコメント投稿 |
-| `HANDOFF_DISPATCH_TOKEN` | 引き継ぎ先のリポジトリで Actions を起動する（任意） |
+| `HANDOFF_ISSUE_TOKEN` | 引き継ぎ先のリポジトリに issue を立てる（任意） |
 
 `ISSUES_REPO_TOKEN` に要る権限は `TrainLCD/Issues` の Issues (read and write)
 だけです。`ANTHROPIC_API_KEY` と合わせて、どちらかを設定し忘れていると、警告を
 出すだけで何もせずに終わります。
 
-`HANDOFF_DISPATCH_TOKEN` に要る権限は、引き継ぎ先の 2 リポジトリの Actions
+`HANDOFF_ISSUE_TOKEN` に要る権限は、引き継ぎ先の 2 リポジトリの Issues
 (read and write) です。設定しなければ引き継ぎは起きず、コメントに名前が出る
-だけになります。
+だけになります。Worker の振り分けが外れたときだけ使うので、後回しにしても
+通常の経路は動きます。
 
 ## 設計上の判断
 
