@@ -21,6 +21,7 @@ const base = {
   issuesRepo: 'TrainLCD/Issues',
   issueNumber: '1251',
   assignee: 'TinyKitten',
+  stubIssue: '6994',
 };
 
 test('改行でも CSV でも一覧として読める', () => {
@@ -87,4 +88,17 @@ test('検査コマンドと引き継ぎ先も決まった深さで並ぶ', () =>
   assert.match(prompt, /^ {3}- `cargo test`$/m);
   assert.match(prompt, /^ {2}- .+ → `MobileApp`$/m);
   assert.match(prompt, /^ {3}- `data\/\*\.csv`$/m);
+});
+
+test('スタブ issue があれば PR で閉じさせる', () => {
+  const prompt = composePrompt(base);
+  assert.match(prompt, /Closes #6994/);
+  assert.match(prompt, /Refs TrainLCD\/Issues#1251/);
+});
+
+test('スタブ issue が無ければ参照だけにする', () => {
+  // 手動実行でスタブを介さない場合。存在しない issue を閉じさせない。
+  const prompt = composePrompt({ ...base, stubIssue: '' });
+  assert.doesNotMatch(prompt, /Closes #/);
+  assert.match(prompt, /Refs TrainLCD\/Issues#1251/);
 });

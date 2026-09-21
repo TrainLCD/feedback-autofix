@@ -9,7 +9,8 @@ StationAPI / Functions の 3 リポジトリから共通で使います。
 
 ## 何をするか
 
-1. `TrainLCD/Issues` の issue を取得し、ラベルの条件を満たすか確かめます。
+0. 自分のリポジトリに立ったスタブ issue の本文から、管理チケットの番号を取ります。
+1. `TrainLCD/Issues` の管理チケットを取得し、ラベルの条件を満たすか確かめます。
 2. 本文から送信者を特定できる節とレポート画像の URL を取り除きます。
 3. 同じ issue を二度扱っていないか、ブランチ・PR・コメントの 3 つで確かめます。
 4. エージェントに渡すプロンプトを組み立てます。
@@ -20,14 +21,106 @@ StationAPI / Functions の 3 リポジトリから共通で使います。
 違うためです。判定より先に重い準備を走らせないよう、`prepare` は必ず先に通して
 ください。届く issue の多くは対象外です。
 
+## 起点はスタブ issue です
+
+原因がどのリポジトリにあるかは、`TrainLCD/Functions` のフィードバックトリアージが
+本文を読んで判定済みです。信頼度が `PUBLIC_ISSUE_MIN_CONFIDENCE`（0.7）を超えると、
+そのリポジトリにスタブ issue を立てます。
+
+```text
+アプリ → Worker → TrainLCD/Issues に管理チケット（非公開・原文あり）
+                → 原因のリポジトリにスタブ issue（公開・参照だけ）
+                                    ▼
+                  そのリポジトリの workflow が issues: opened で起動
+                  本文から管理チケット番号を読み、Issues 側から本文を取得
+                  → エージェントが修正 → PR
+```
+
+スタブ issue の本文はこの形です。原文・要約・端末情報は入りません。
+
+```text
+## 管理チケット
+- Issue: TrainLCD/Issues#1277
+- チケットID: `268bc14a-...`
+```
+
+**振り分けをやり直さないでください。** どこかのリポジトリを窓口にして、そこの
+エージェントに原因を調べさせてから回すと、データ起因が多い現状では毎回ムダな
+1 往復になります。自分のところに立っていること自体が振り分けの答えです。
+
+### 振り分けが外れた場合
+
+エージェントが「原因は別のリポジトリにある」と判断したら、`report` が引き継ぎ先に
+同じ形のスタブ issue を立て、そのあとで結果を管理チケットにコメントします。向こうは
+自分に立った issue に反応するので、経路は Worker のときと同じです。`handoff_token` を
+空にすると、コメントに名前が出るだけで向こうは動きません。
+
+**順番を入れ替えないでください。** 先にコメントを投稿すると、issue を立てられなかった
+ときに「済み」の目印だけが管理チケットに残ります。`prepare` は次からそこで打ち切るので、
+引き継ぎは起きないまま二度と動かなくなります。issue を立てられなかった場合は、
+コメントを失敗の報告へ差し替えます。目印が変わるので、もう一度試せます。
+
+同じスタブを二度立てないよう、作る前に引き継ぎ先を題名で探します。コメントの投稿に
+失敗して再実行したときに、向こうへ同じ issue が並ぶのを防ぐためです。検索そのものが
+失敗した場合は issue を立てずに終えます。「1 件も無い」のか「調べられなかった」のかを
+区別できないまま作ると、スタブが 2 つ並びます。
+
+この確認は、同じ管理チケットの実行が直列に走ることが前提です。並行して走ると、両方が
+「1 件も無い」を受け取ってから両方が作ります。そのため「使い方」の workflow では `concurrency`
+をスタブ issue の番号ではなく題名で束ねています。題名には管理チケットへの参照が入って
+いるので、同じチケットを指すスタブはグループが揃います。
+
+直列になるのは 1 つのリポジトリの中だけです。`concurrency` のグループはリポジトリごとに
+分かれているので、違うリポジトリから同じ引き継ぎ先へ同時に回った場合は揃いません。
+これが起きるには、同じ管理チケットのスタブが 2 つのリポジトリに同時に立っている必要が
+あります。
+
+行ったり来たりは目印が止めます。管理チケットへ書くコメントの目印にはリポジトリ名が
+入っていて（`<!-- auto-fix-from-feedback:TrainLCD/MobileApp -->`）、`prepare` は
+自分の目印だけを探します。StationAPI から MobileApp へ戻ってきても、MobileApp は
+すでに自分の目印を残しているので、そこで打ち切られます。
+
+目印を共通の綴りにしないでください。最初に結果を書いたリポジトリのコメントが
+残りの 2 つを止め、手動で叩いても動かなくなります。
+
+## 誰が立てた issue かを確かめます
+
+対象の 3 リポジトリはどれも公開されていて、issue は誰でも立てられます。本文の
+書式だけを見て管理チケットの番号を受け取ると、第三者が
+
+```text
+## 管理チケット
+- Issue: TrainLCD/Issues#1200
+```
+
+と書いた issue を立てるだけで、`ISSUES_REPO_TOKEN` が非公開チケットの本文を
+取りに行き、エージェントへ渡してしまいます。そこから公開 PR に内容が出ます。
+
+そのため `allowed_authors` に挙げたアカウントが立てた issue だけを対象にします。
+照合するのは login ではなく数値の ID です。login は本人が変更でき、手放された
+名前は他人が取得できますが、ID は作り直せません。`allowed_authors` が空のときは
+どのスタブ issue も対象になりません。設定を忘れたまま素通りするより、動かないほうが
+気づけるためです。
+
+現在スタブ issue を立てているのは TinyKitten（ID `32848922`）です。`TrainLCD/MobileApp`
+の issue #6994 を API で取得すると `user.id` がこの値になります。Worker のトークンを
+別のアカウントへ移したら、3 リポジトリの `allowed_authors` も一緒に変えてください。
+
+引き継ぎで立つスタブ issue の作成者は `HANDOFF_ISSUE_TOKEN` のアカウントです。
+Worker と違うアカウントのトークンを使うなら、その ID も `allowed_authors` に足して
+ください。足さないと引き継ぎ先が issue を受け取っても動きません。複数の ID は
+カンマで区切ります。
+
 ## 使い方
 
 ```yaml
 name: Auto Fix From Feedback
 
 on:
-  repository_dispatch:
-    types: [feedback-auto-fix]
+  # Worker がこのリポジトリに立てるスタブ issue を起点にする。
+  issues:
+    types: [opened]
+  # 取りこぼしをやり直すときと、スタブを介さず動かすときに使う。
   workflow_dispatch:
     inputs:
       issue_number:
@@ -37,10 +130,23 @@ on:
 
 permissions:
   contents: write
+  # prepare がスタブ issue を GITHUB_TOKEN で取得する。permissions を書いた時点で
+  # 挙げなかった権限は none になるので、これを省くとそこで止まる。
+  issues: read
   pull-requests: write
 
+# 同じ管理チケットに対する実行を直列にする。スタブ issue の番号で束ねると、同じ
+# チケットを指すスタブが 2 つあったときに別のグループへ入って同時に走る。エージェントが
+# 2 つ動き、同じ名前のブランチを取り合い、引き継ぎ先にも issue が 2 つ立つ。
+#
+# 題名には管理チケットへの参照が入っていて、Worker が立てるものも report が立てる
+# ものも同じ形なので、これで同じチケットは同じグループに入る。cancel-in-progress を
+# false にしてあるので後続は待たされ、先行が結果を書き終えてから動き出す。そこで
+# prepare の重複確認に引っかかって打ち切られる。
 concurrency:
-  group: auto-fix-from-feedback-${{ github.event.client_payload.issue_number || inputs.issue_number }}
+  # 題名にコロンが入るので、値全体を引用符で囲むこと。囲まないと YAML が
+  # そこでキーの区切りと読み、workflow を読み込めなくなる。
+  group: "auto-fix-from-feedback-${{ github.event.issue.title || format('フィードバック対応: {0}#{1}', 'TrainLCD/Issues', inputs.issue_number) }}"
   cancel-in-progress: false
 
 jobs:
@@ -48,19 +154,25 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
+      # action は可変タグではなく commit SHA で固定すること。理由は「action は
+      # SHA で固定してください」に書いてある。
+      #
       # persist-credentials: false を外さないこと。既定の true だと、書き込み
       # 権限付きの GITHUB_TOKEN がローカルの git 設定に残り、依存のインストールの
       # postinstall とエージェントの Bash(git:*) から素で使える状態になる。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: TrainLCD/feedback-autofix/prepare@v1
+      - uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
         id: prepare
         with:
-          issue_number: ${{ github.event.client_payload.issue_number || inputs.issue_number }}
+          stub_issue_number: ${{ github.event.issue.number }}
+          issue_number: ${{ inputs.issue_number }}
+          # スタブ issue の作成者として認める数値 ID。詳しくは下記。
+          allowed_authors: "32848922"
           issues_repo_token: ${{ secrets.ISSUES_REPO_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -76,7 +188,7 @@ jobs:
             - 表示に使う定数やアセット
 
       # ここから先はリポジトリごとに違う。対象だったときだけ走らせる。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.prepare.outputs.eligible == 'true'
         with:
           node-version: 24
@@ -84,7 +196,7 @@ jobs:
       - run: npm ci
         if: steps.prepare.outputs.eligible == 'true'
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1
         id: claude
         if: steps.prepare.outputs.eligible == 'true'
         with:
@@ -95,15 +207,68 @@ jobs:
             --allowedTools "Edit,Read,Write,Glob,Grep,TodoWrite,Bash(npm:*),Bash(git:*),Bash(gh:*),Bash(node:*)"
 
       # always() を外さないこと。エージェントが失敗した場合こそ報告が要る。
-      - uses: TrainLCD/feedback-autofix/report@v1
-        if: ${{ always() && steps.prepare.outputs.eligible == 'true' }}
+      # failed も外さないこと。prepare が対象だと分かったあとで落ちた場合、
+      # eligible は 'true' になりません。この条件が無いと report が走らず、
+      # ジョブが赤くなるだけで管理チケットには何も残りません。
+      - uses: TrainLCD/feedback-autofix/report@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
+        if: ${{ always() && (steps.prepare.outputs.eligible == 'true' || steps.prepare.outputs.failed == 'true') }}
         with:
-          issue_number: ${{ github.event.client_payload.issue_number || inputs.issue_number }}
+          issue_number: ${{ steps.prepare.outputs.issue_number }}
           issues_repo_token: ${{ secrets.ISSUES_REPO_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ steps.prepare.outputs.branch }}
           verdict_path: ${{ steps.prepare.outputs.verdict_path }}
           claude_outcome: ${{ steps.claude.outcome }}
+          # 引き継ぎ先に issue を立てられるトークン。省くと引き継ぎは起きない。
+          handoff_token: ${{ secrets.HANDOFF_ISSUE_TOKEN }}
+```
+
+## action は SHA で固定してください
+
+このワークフローのジョブは `contents: write` と `pull-requests: write` を持ち、
+`ISSUES_REPO_TOKEN` と `ANTHROPIC_API_KEY` を渡します。`@v1` のような可変タグのままに
+すると、タグが差し替えられた時点でその内容がこの権限で動きます。
+
+`prepare` は非公開の管理チケットを読めるトークンを受け取るので、外部の action より
+むしろ厳しく固定してください。
+
+このリポジトリにはバージョンタグがありません。一度 `v1` を打ちましたが、中身が
+出来上がる前だったので消しました。付け替えも削除も実際に起きるので、「タグは動く」は
+仮定ではありません。
+
+コメントには、その SHA がどこから来たかを残します。
+
+```yaml
+- uses: TrainLCD/feedback-autofix/prepare@406de875a89dd1e640f8b66b71d4de9516a952ca # feedback-autofix#1
+```
+
+**固定する SHA を選ぶとき**は `master` の先頭を取ります。`dev` は使いません。
+`dev` には `master` へまだ反映していない変更が入っていることがあります。
+
+```bash
+git ls-remote https://github.com/TrainLCD/feedback-autofix refs/heads/master
+```
+
+**固定済みの SHA が何なのかを確かめるとき**は、この方法は使えません。`master` が
+進むと先頭が変わるので、固定した SHA とは一致しなくなります。コミットを直接取って
+きて中身を読んでください。ブランチが何周していても使えます。
+
+```bash
+git fetch --depth 1 https://github.com/TrainLCD/feedback-autofix \
+  406de875a89dd1e640f8b66b71d4de9516a952ca
+git log -1 FETCH_HEAD
+git show FETCH_HEAD:prepare/action.yml
+```
+
+`git log` で分かるのはコミットの題名と日付だけです。固定した中身そのものを読むには
+`git show <コミット>:<パス>` を使ってください。
+
+タグを打った場合は、注釈付きかどうかで指す先が変わります。使うのはタグオブジェクト
+ではなく `refs/tags/<タグ>^{}` の指すコミットです。`anthropics/claude-code-action` の
+`v1` がこれに当たり、間違えると存在しない参照になります。
+
+```bash
+git ls-remote https://github.com/anthropics/claude-code-action 'refs/tags/v1' 'refs/tags/v1^{}'
 ```
 
 ## リポジトリごとに変える入力
@@ -180,9 +345,19 @@ StationAPI の `scope` には `data/*.csv` を含めます。届くフィード�
 | ---- | ---- |
 | `ANTHROPIC_API_KEY` | Claude Code Action の認証 |
 | `ISSUES_REPO_TOKEN` | `TrainLCD/Issues` の issue 取得とコメント投稿 |
+| `HANDOFF_ISSUE_TOKEN` | 引き継ぎ先のリポジトリに issue を立てる（任意） |
 
 `ISSUES_REPO_TOKEN` に要る権限は `TrainLCD/Issues` の Issues (read and write)
-だけです。どちらかを設定し忘れていると、警告を出すだけで何もせずに終わります。
+だけです。`ANTHROPIC_API_KEY` と合わせて、どちらかを設定し忘れていると、警告を
+出すだけで何もせずに終わります。
+
+`HANDOFF_ISSUE_TOKEN` は引き継ぎ先のリポジトリに issue を立てるために使います。
+fine-grained token なら、引き継ぎ先の 2 リポジトリに対する **Issues: write** が
+要ります（[GitHub の権限表](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)で
+`POST /repos/{owner}/{repo}/issues` の行）。
+
+設定しなければ引き継ぎは起きず、コメントに名前が出るだけになります。Worker の
+振り分けが外れたときだけ使うので、後回しにしても通常の経路は動きます。
 
 ## 設計上の判断
 
@@ -202,6 +377,13 @@ Action が行い、エージェントには `Bash(git:*)` と `Bash(gh:*)` を�
 **結果は必ず issue へ返します。** PR が出来たならそのリンク、直せないなら理由、
 最後まで進まなかったならどこで止まったのかを投稿します。何も言わずに終わる
 場合は作っていません。
+
+**prepare は対象だと分かったあとでは自分から落ちません。** 管理チケットの番号が
+決まったあとのステップには `continue-on-error: true` を付けてあります。ここで
+ジョブが落ちると report まで届きません。`ISSUES_REPO_TOKEN` の期限切れやスクリプトの
+エラーが、管理チケットに何も残らないまま終わってしまいます。失敗したかどうかは
+`failed` 出力で返します。report が「準備の途中で止まりました」と書いてから、
+ジョブを落とします。
 
 ## 開発
 
