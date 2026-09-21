@@ -147,10 +147,16 @@ runs:
           exit 0
         fi
         # --paginate と --jq を一緒に使うとページごとに jq が走るので、件数は
-        # 行数で数える。目印の綴りは feedback-autofix-comment.mjs の MARKER と揃えてある。
+        # 行数で数える。目印の綴りは feedback-autofix-comment.mjs の markerFor と
+        # 揃えてある。リポジトリ名まで見るのは、同じ issue を 3 リポジトリが順に
+        # 扱うため。共通の綴りで探すと、先に結果を書いたリポジトリのコメントで
+        # 自分まで止まる。
+        # 目印はシェルで組み立て、jq へは env 経由で渡す。jq の式に直接埋めると
+        # 引用の入れ子が深くなり、綴りを間違えても静かに 0 件になる。
+        export MARKER="<!-- auto-fix-from-feedback:$GITHUB_REPOSITORY -->"
         COMMENTED="$(GH_TOKEN="$ISSUES_REPO_TOKEN" gh api \
           "repos/$ISSUES_REPO/issues/$ISSUE_NUMBER/comments" --paginate \
-          --jq '.[] | select(.body | startswith("<!-- auto-fix-from-feedback -->")) | .id' | wc -l)"
+          --jq '.[] | select(.body | startswith(env.MARKER)) | .id' | wc -l)"
         if [ "$COMMENTED" != "0" ]; then
           echo "::notice::この issue は結果を書き終えているため処理を中止します"
           echo "found=true" >> "$GITHUB_OUTPUT"

@@ -31,6 +31,24 @@ inputs:
   claude_outcome:
     description: エージェントのステップの outcome。結果が無いとき、どこまで進んだかの判断に使う
     required: true
+  dispatch_token:
+    description: |
+      引き継ぎ先のリポジトリで Actions を起動できるトークン。空にすると、
+      引き継ぎ先が決まってもコメントに名前を出すだけで、そちらは動かない。
+    required: false
+    default: ""
+  dispatch_event_type:
+    description: 引き継ぎ先へ投げる repository_dispatch のイベント名
+    required: false
+    default: feedback-auto-fix
+
+outputs:
+  action:
+    description: linked / declined / failed のいずれか
+    value: ${{ steps.report.outputs.action }}
+  handoff:
+    description: 引き継ぎ先のリポジトリ名。決まらなかった場合は空
+    value: ${{ steps.report.outputs.handoff }}
 
 runs:
   using: composite
@@ -71,6 +89,29 @@ runs:
         gh issue comment "$ISSUE_NUMBER" \
           --repo "$ISSUES_REPO" \
           --body-file "$RUNNER_TEMP/issue-comment.md"
+
+    # 直せないと分かり、引き継ぎ先も決まっているなら、そのリポジトリを起動する。
+    # ここで回さないと handoff はコメントに名前が出るだけで終わり、向こうの
+    # ワークフローは誰も起動しない。
+    #
+    # 行ったり来たりは目印が止める。引き継ぎ先が調べ終えて戻してきても、こちらは
+    # すでに自分の目印を残しているので、prepare の時点で打ち切られる。
+    - name: Hand off to another repository
+      if: steps.report.outputs.action == 'declined' && steps.report.outputs.handoff != '' && inputs.dispatch_token != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.dispatch_token }}
+        HANDOFF: ${{ steps.report.outputs.handoff }}
+        EVENT_TYPE: ${{ inputs.dispatch_event_type }}
+        ISSUE_NUMBER: ${{ inputs.issue_number }}
+      run: |
+        set -euo pipefail
+        # 引き継ぎ先は feedback-autofix-comment.mjs が既知の名前だけに絞った
+        # あとの値なので、そのままリポジトリ名として使える。
+        gh api "repos/TrainLCD/$HANDOFF/dispatches" \
+          -f event_type="$EVENT_TYPE" \
+          -F "client_payload[issue_number]=$ISSUE_NUMBER"
+        echo "::notice::TrainLCD/$HANDOFF へ引き継ぎました"
 
     # どこで止まったのかを投稿し終えてから、ジョブを失敗させる。エージェントの
     # ステップがすでに失敗していれば、ここへ来る前からジョブは赤い。問題は

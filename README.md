@@ -20,6 +20,24 @@ StationAPI / Functions の 3 リポジトリから共通で使います。
 違うためです。判定より先に重い準備を走らせないよう、`prepare` は必ず先に通して
 ください。届く issue の多くは対象外です。
 
+## 3 リポジトリの回り方
+
+`TrainLCD/Issues` のディスパッチャは MobileApp だけを起動します。利用者は
+アプリで症状に出会うので、そこを最初の窓口にしています。
+
+MobileApp が「原因は StationAPI にある」と判断すると、`report` がその結果を
+issue にコメントしたうえで、StationAPI へ `repository_dispatch` を投げます。
+StationAPI が直せば PR が出て、そこでも直せなければ次の引き継ぎ先へ回ります。
+`dispatch_token` を空にすると、コメントに名前が出るだけで向こうは動きません。
+
+行ったり来たりは目印が止めます。issue へ書くコメントの目印にはリポジトリ名が
+入っていて（`<!-- auto-fix-from-feedback:TrainLCD/MobileApp -->`）、`prepare` は
+自分の目印だけを探します。StationAPI から MobileApp へ戻ってきても、MobileApp は
+すでに自分の目印を残しているので、そこで打ち切られます。
+
+目印を共通の綴りにしないでください。最初に結果を書いたリポジトリのコメントが
+残りの 2 つを止め、手動で叩いても動かなくなります。
+
 ## 使い方
 
 ```yaml
@@ -104,6 +122,8 @@ jobs:
           branch: ${{ steps.prepare.outputs.branch }}
           verdict_path: ${{ steps.prepare.outputs.verdict_path }}
           claude_outcome: ${{ steps.claude.outcome }}
+          # 引き継ぎ先の Actions を起動できるトークン。省くと引き継ぎは起きない。
+          dispatch_token: ${{ secrets.HANDOFF_DISPATCH_TOKEN }}
 ```
 
 ## リポジトリごとに変える入力
@@ -180,9 +200,15 @@ StationAPI の `scope` には `data/*.csv` を含めます。届くフィード�
 | ---- | ---- |
 | `ANTHROPIC_API_KEY` | Claude Code Action の認証 |
 | `ISSUES_REPO_TOKEN` | `TrainLCD/Issues` の issue 取得とコメント投稿 |
+| `HANDOFF_DISPATCH_TOKEN` | 引き継ぎ先のリポジトリで Actions を起動する（任意） |
 
 `ISSUES_REPO_TOKEN` に要る権限は `TrainLCD/Issues` の Issues (read and write)
-だけです。どちらかを設定し忘れていると、警告を出すだけで何もせずに終わります。
+だけです。`ANTHROPIC_API_KEY` と合わせて、どちらかを設定し忘れていると、警告を
+出すだけで何もせずに終わります。
+
+`HANDOFF_DISPATCH_TOKEN` に要る権限は、引き継ぎ先の 2 リポジトリの Actions
+(read and write) です。設定しなければ引き継ぎは起きず、コメントに名前が出る
+だけになります。
 
 ## 設計上の判断
 
