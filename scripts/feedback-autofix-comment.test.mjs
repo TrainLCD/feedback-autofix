@@ -215,10 +215,22 @@ test('目印はリポジトリごとに別になる', () => {
 });
 
 test('失敗の報告は自分のリポジトリの重複検知にも引っかからない', () => {
-  // 引っかかると、一時的な失敗のあと二度と試せなくなる。
-  const body = renderFailureComment({ stage: 'agent-failed', runUrl: RUN_URL, repo: REPO });
-  assert.ok(body.startsWith(errorMarkerFor(REPO)));
-  assert.equal(body.startsWith(markerFor(REPO)), false);
+  // 引っかかると、一時的な失敗のあと二度と試せなくなる。prepare は対象だと
+  // 分かったあとで落ちても not-reached として報告するので、止まった箇所が
+  // どれであってもこれが成り立っている必要がある。
+  const stages = [
+    'not-reached',
+    'agent-failed',
+    'no-verdict',
+    'invalid-verdict',
+    'pr-missing',
+    'handoff-failed',
+  ];
+  for (const stage of stages) {
+    const body = renderFailureComment({ stage, runUrl: RUN_URL, repo: REPO });
+    assert.ok(body.startsWith(errorMarkerFor(REPO)), stage);
+    assert.equal(body.startsWith(markerFor(REPO)), false, stage);
+  }
 });
 
 test('declined なら引き継ぎ先も一緒に返す', () => {
